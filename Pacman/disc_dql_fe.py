@@ -536,20 +536,39 @@ def main():
             if is_stagnant:
                 reward -= 10
 
-            # 3b. Incentivo para se Afastar de Fantasmas Perigosos
-            dist_to_dangerous_ghost = float('inf')
-            if powerup_counter <= 0:
+            # 3b. Incentivo Dinâmico para Interagir com Fantasmas (Fugir ou Caçar)
+            if powerup_counter <= 0: # CENÁRIO 1: FUGIR DE FANTASMAS PERIGOSOS
+                dist_to_dangerous_ghost = float('inf')
                 for ghost in ghosts:
                     if not ghost.is_dead:
                         dist = math.hypot(player.row - ghost.row, player.col - ghost.col)
                         dist_to_dangerous_ghost = min(dist_to_dangerous_ghost, dist)
+                
+                # Recompensa a MUDANÇA na distância para incentivar o AFASTAMENTO
+                if last_dist_to_ghost is not None and dist_to_dangerous_ghost != float('inf'):
+                    reward_change = dist_to_dangerous_ghost - last_dist_to_ghost
+                    reward += 0.5 * reward_change # Recompensa positiva se a distância aumenta
+                
+                # Atualiza a variável para o próximo turno
+                last_dist_to_ghost = dist_to_dangerous_ghost if dist_to_dangerous_ghost != float('inf') else last_dist_to_ghost
+                last_dist_to_vulnerable = None # Reseta a outra variável
             
-            if last_dist_to_ghost is not None and dist_to_dangerous_ghost != float('inf'):
-                reward_change = dist_to_dangerous_ghost - last_dist_to_ghost
-                reward += 0.5 * reward_change
-            
-            if dist_to_dangerous_ghost != float('inf'):
-                last_dist_to_ghost = dist_to_dangerous_ghost
+            else: # CENÁRIO 2: CAÇAR FANTASMAS VULNERÁVEIS
+                dist_to_vulnerable_ghost = float('inf')
+                for ghost in ghosts:
+                    if not ghost.is_dead: # Todos os não mortos são vulneráveis
+                        dist = math.hypot(player.row - ghost.row, player.col - ghost.col)
+                        dist_to_vulnerable_ghost = min(dist_to_vulnerable_ghost, dist)
+                
+                # Recompensa a MUDANÇA na distância para incentivar a APROXIMAÇÃO
+                if last_dist_to_vulnerable is not None and dist_to_vulnerable_ghost != float('inf'):
+                    # O sinal é invertido: recompensa se a distância diminui
+                    reward_change = last_dist_to_vulnerable - dist_to_vulnerable_ghost
+                    reward += 0.7 * reward_change # Recompensa um pouco mais a caça do que a fuga
+
+                # Atualiza a variável para o próximo turno
+                last_dist_to_vulnerable = dist_to_vulnerable_ghost if dist_to_vulnerable_ghost != float('inf') else last_dist_to_vulnerable
+                last_dist_to_ghost = None # Reseta a outra variável
             
             # 4. Custo de vida (penalidade de tempo)
             reward -= 1
