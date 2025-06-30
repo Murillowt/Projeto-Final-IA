@@ -267,17 +267,17 @@ device = torch.device("cpu") # Usando CPU para este modelo
 
 # Hiperparâmetros
 BATCH_SIZE = 128
-GAMMA = 0.97
-EPS_START = 1
+GAMMA = 0.90
+EPS_START = 1.0
 EPS_END = 0.03
 EPS_DECAY = 7000
 TARGET_UPDATE = 10
-MEMORY_SIZE = 10000
-LR = 4e-4
+MEMORY_SIZE = 25000
+LR = 2e-4
 model_file = 'dql_discrete_model.pth'
 
 #parametros de reward:
-score_multiplier = 3
+score_multiplier = 2
 
 # A arquitetura da rede não muda, mas o número de observações sim
 N_ACTIONS = 4
@@ -301,6 +301,46 @@ class DQN(nn.Module): # (código da DQN permanece o mesmo)
         x = F.relu(self.layer1(x))
         x = F.relu(self.layer2(x))
         return self.layer3(x)
+    
+class DuelingDQN(nn.Module):
+    def __init__(self, n_observations, n_actions):
+        super(DuelingDQN, self).__init__()
+
+        # Camada compartilhada que processa o estado inicial
+        self.feature_layer = nn.Sequential(
+            nn.Linear(n_observations, 128),
+            nn.ReLU(),
+            nn.Linear(128, 128),
+            nn.ReLU()
+        )
+
+        # Braço do Valor (Value Stream) - produz um único valor para o estado
+        self.value_stream = nn.Sequential(
+            nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Linear(128, 1)
+        )
+
+        # Braço da Vantagem (Advantage Stream) - produz um valor para cada ação
+        self.advantage_stream = nn.Sequential(
+            nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Linear(128, n_actions)
+        )
+
+    def forward(self, x):
+        # Passa o estado pela camada de features compartilhada
+        features = self.feature_layer(x)
+
+        # Calcula o valor do estado e a vantagem de cada ação
+        value = self.value_stream(features)
+        advantages = self.advantage_stream(features)
+
+        # Combina os dois streams para obter os Q-values finais
+        # Q(s,a) = V(s) + (A(s,a) - mean(A(s,a)))
+        q_values = value + (advantages - advantages.mean(dim=1, keepdim=True))
+
+        return q_values
     
 def find_nearest_pellet(player, pellet_group):
     """ Encontra a pastilha mais próxima e retorna um vetor e a distância. """
@@ -492,8 +532,8 @@ def main():
     clock = pygame.time.Clock()
 
     # --- Inicialização do Agente DRL ---
-    policy_net = DQN(N_OBSERVATIONS, N_ACTIONS).to(device)
-    target_net = DQN(N_OBSERVATIONS, N_ACTIONS).to(device)
+    policy_net = DuelingDQN(N_OBSERVATIONS, N_ACTIONS).to(device)
+    target_net = DuelingDQN(N_OBSERVATIONS, N_ACTIONS).to(device)
     if os.path.exists(model_file):
         policy_net.load_state_dict(torch.load(model_file))
         print("Modelo DQL carregado do arquivo.")
@@ -572,7 +612,7 @@ def main():
         render_this_run = (episode >= nTreino)
 
         # Loop de um episódio (baseado em turnos)
-        for turn in range(20000): # Limite de turnos para evitar loops infinitos
+        for turn in range(25000): # Limite de turnos para evitar loops infinitos
 
             stagnation_tracker.append({'pos': (player.row, player.col), 'score': score})
             # ANTES do jogador se mover, calcule a distância atual para a pastilha
@@ -663,7 +703,7 @@ def main():
                     is_stagnant = True
 
             if is_stagnant:
-                reward -= 10 # Penalidade por não progredir.
+                reward -= 5 # Penalidade por não progredir.
 
             # Etapa 2c: Incentivo Dinâmico para Interagir com Fantasmas (Fugir ou Caçar).
             if powerup_counter <= 0: # CENÁRIO 1: FUGIR DE FANTASMAS PERIGOSOS
@@ -675,7 +715,7 @@ def main():
                 
                 if last_dist_to_ghost is not None and dist_to_dangerous_ghost != float('inf'):
                     reward_change = dist_to_dangerous_ghost - last_dist_to_ghost
-                    reward += 0.5 * reward_change # Recompensa positiva se a distância aumenta
+                    reward += 0.3 * reward_change # Recompensa positiva se a distância aumenta
                 
                 last_dist_to_ghost = dist_to_dangerous_ghost if dist_to_dangerous_ghost != float('inf') else last_dist_to_ghost
                 last_dist_to_vulnerable = None
@@ -689,27 +729,22 @@ def main():
                 
                 if last_dist_to_vulnerable is not None and dist_to_vulnerable_ghost != float('inf'):
                     reward_change = last_dist_to_vulnerable - dist_to_vulnerable_ghost
-                    reward += 0.7 * reward_change # Recompensa um pouco mais a caça do que a fuga
+                    reward += 0.3 * reward_change # Recompensa um pouco mais a caça do que a fuga
 
                 last_dist_to_vulnerable = dist_to_vulnerable_ghost if dist_to_vulnerable_ghost != float('inf') else last_dist_to_vulnerable
                 last_dist_to_ghost = None
 
             # Etapa 2d: Custo de vida (penalidade de tempo para incentivar a eficiência).
-            reward -= 1
+            reward -= 0.5
 
             # Etapa 2e: Recompensa por se aproximar ou afastar da pastilha mais próxima
             _, dist_depois = find_nearest_pellet(player, normal_pellets_group)
             
-            if dist_depois < dist_antes:
-                reward += 0.1  # Pequeno bônus por se aproximar do objetivo
-            # Opcional, mas recomendado: penalizar por se afastar
-            elif dist_depois > dist_antes:
-                reward -= 0.15 # Penalidade um pouco maior para desencorajar se afastar
 
             # Etapa 2f: Penalidade por reverter a direção
             opposite_actions = {0: 1, 1: 0, 2: 3, 3: 2} # R<->L, U<->D
             if last_action != -1 and action == opposite_actions.get(last_action):
-                reward -= 2 # Penalidade por movimento de vai e vem
+                reward -= 1 # Penalidade por movimento de vai e vem
 
             ### FIM DO CÁLCULO DA RECOMPENSA ###
 
