@@ -267,13 +267,13 @@ device = torch.device("cpu") # Usando CPU para este modelo
 
 # Hiperparâmetros
 BATCH_SIZE = 128
-GAMMA = 0.99
-EPS_START = 1.0
-EPS_END = 0.05
-EPS_DECAY = 3000
+GAMMA = 0.97
+EPS_START = 1
+EPS_END = 0.03
+EPS_DECAY = 7000
 TARGET_UPDATE = 10
 MEMORY_SIZE = 10000
-LR = 5e-4
+LR = 4e-4
 model_file = 'dql_discrete_model.pth'
 
 #parametros de reward:
@@ -281,7 +281,7 @@ score_multiplier = 3
 
 # A arquitetura da rede não muda, mas o número de observações sim
 N_ACTIONS = 4
-N_OBSERVATIONS = 27
+N_OBSERVATIONS = 29
 
 Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'reward'))
 
@@ -325,7 +325,7 @@ def find_nearest_pellet(player, pellet_group):
         # Este caso raramente acontecerá se o primeiro 'if' for verificado, mas é uma boa prática
         return ([0.0, 0.0], float('inf'))
 
-def get_state_discrete(player, ghosts, powerup_counter, level_board, pellets_group, power_pellets_group):
+def get_state_discrete(player, ghosts, powerup_counter, level_board, pellets_group, power_pellets_group, initial_pellet_count, initial_power_pellet_count):
     features = []
     
     # Normalizadores
@@ -367,13 +367,18 @@ def get_state_discrete(player, ghosts, powerup_counter, level_board, pellets_gro
     # Vetor para a pastilha normal mais próxima
     normal_pellet_vector, _ = find_nearest_pellet(player, pellets_group)
     features.extend(normal_pellet_vector)
+
+    # --- ADIÇÃO DAS NOVAS FEATURES DE CONTAGEM ---
+    # Normaliza a contagem atual pela contagem inicial
+    remaining_pellets_normalized = len(pellets_group) / initial_pellet_count
+    remaining_power_pellets_normalized = len(power_pellets_group) / initial_power_pellet_count
+    
+    features.append(remaining_pellets_normalized)
+    features.append(remaining_power_pellets_normalized)
     # --- FIM DA ADIÇÃO ---
 
     return torch.tensor(features, dtype=torch.float32, device=device).unsqueeze(0)
 
-
-
-    return torch.tensor(features, dtype=torch.float32, device=device).unsqueeze(0)
 
 def get_location_type_features(row, col, level_board):
     """
@@ -502,6 +507,16 @@ def main():
     nTreino = int(input("Quantas runs de treino o programa deve fazer?: "))
     nRender = int(input("Quantas runs você deseja assistir após o treino?: "))
 
+    # --- INICIALIZAÇÃO DO LOG DE TREINAMENTO ---
+    log_file_path = 'training_log.csv'
+    with open(log_file_path, 'w') as log_file:
+        # Escreve o cabeçalho do arquivo CSV
+        log_file.write("Episodio,Percentual de Vitorias (%),Score Medio\n")
+    
+    block_scores = []
+    block_wins = 0
+    # --- FIM DO BLOCO DE LOG ---
+
     history_len = 50 # Rastrear os últimos 50 turnos
     stagnation_tracker = deque(maxlen=history_len)
     
@@ -532,6 +547,14 @@ def main():
                     pos = (c_idx * TILE_WIDTH + TILE_WIDTH // 2, r_idx * TILE_HEIGHT + TILE_HEIGHT // 2)
                     pellet = Pellet(pos, 2)
                     power_pellets_group.add(pellet)
+
+        # >>> ADICIONE ESTAS LINHAS AQUI <<<
+        initial_pellet_count = len(normal_pellets_group)
+        initial_power_pellet_count = len(power_pellets_group)
+
+        # Para evitar divisão por zero caso um mapa não tenha pílulas de poder
+        if initial_power_pellet_count == 0:
+            initial_power_pellet_count = 1 # Define como 1 para não alterar o cálculo
 
         # Adiciona as pastilhas ao grupo principal de renderização
         all_sprites.add(normal_pellets_group, power_pellets_group)
@@ -571,7 +594,7 @@ def main():
             valid_moves = get_valid_moves_for_pos(player.row, player.col, level)
             if not valid_moves: break # Fim de jogo se o jogador ficar preso
             
-            state = get_state_discrete(player, ghosts, powerup_counter, level, normal_pellets_group, power_pellets_group)
+            state = get_state_discrete(player, ghosts, powerup_counter, level, normal_pellets_group, power_pellets_group, initial_pellet_count, initial_power_pellet_count)
             action_tensor = choose_action(state, valid_moves, policy_net, steps_done, player.direction)
             action = action_tensor.item()
             steps_done += 1
@@ -695,12 +718,13 @@ def main():
 
             # VERIFICA A CONDIÇÃO DE VITÓRIA E APLICA O BÔNUS ANTES DE SALVAR
             if done and (len(normal_pellets_group) == 0 and len(power_pellets_group) == 0):
-                reward += 1000 # Grande recompensa por vencer
+                reward += 5000 # Grande recompensa por vencer
+                print("O modelo venceu o jogo!")
 
             if done:
                 next_state = None
             else:
-                next_state = get_state_discrete(player, ghosts, powerup_counter, level, normal_pellets_group, power_pellets_group)
+                next_state = get_state_discrete(player, ghosts, powerup_counter, level, normal_pellets_group, power_pellets_group, initial_pellet_count, initial_power_pellet_count)
 
             # Agora o reward está correto quando a transição é salva na memória
             memory.push(state, action_tensor, next_state, torch.tensor([reward], device=device))
@@ -731,7 +755,35 @@ def main():
             if done:
                 break
         
+
         print(f"Episódio {episode + 1} concluído. Score: {score}. Passos: {turn + 1}")
+
+        block_scores.append(score)
+        was_a_win = done and (len(normal_pellets_group) == 0 and len(power_pellets_group) == 0)
+        if was_a_win:
+            block_wins += 1
+
+        # --- LÓGICA DE LOG A CADA 1000 EPISÓDIOS ---
+        # Verifica se completou um bloco de 1000 episódios ou se é o último episódio do treino
+        if (episode + 1) % 1000 == 0 or (episode + 1) == (nTreino + nRender):
+            if block_scores: # Garante que não tente calcular com a lista vazia
+                # Calcula as métricas
+                win_percentage = (block_wins / len(block_scores)) * 100
+                average_score = sum(block_scores) / len(block_scores)
+
+                # Formata a linha para o CSV
+                log_line = f"{episode + 1},{win_percentage:.2f},{average_score:.2f}\n"
+
+                # Adiciona a nova linha ao arquivo (modo 'a' de append)
+                with open(log_file_path, 'a') as log_file:
+                    log_file.write(log_line)
+                
+                print(f"--- LOG SALVO: Episódio {episode + 1}, Vitórias: {win_percentage:.2f}%, Score Médio: {average_score:.2f} ---")
+
+                # Reseta os contadores para o próximo bloco
+                block_scores = []
+                block_wins = 0
+        # --- FIM DO BLOCO DE LOG ---
 
         # Atualiza a rede alvo periodicamente
         if episode % TARGET_UPDATE == 0:
