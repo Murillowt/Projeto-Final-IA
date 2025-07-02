@@ -308,7 +308,7 @@ class ReplayMemory: # (código da ReplayMemory permanece o mesmo)
     def sample(self, batch_size): return random.sample(self.memory, batch_size)
     def __len__(self): return len(self.memory)
 
-class DQN(nn.Module): # (código da DQN permanece o mesmo)
+class DQN(nn.Module):
     def __init__(self, n_observations, n_actions):
         super(DQN, self).__init__()
         self.layer1 = nn.Linear(n_observations, 128)
@@ -488,7 +488,7 @@ def choose_action(state, valid_moves, policy_net, steps_done, current_direction)
         action = random.choice(list(valid_moves.keys()))
         return torch.tensor([[action]], device=device, dtype=torch.long)
 
-def optimize_model(memory, policy_net, target_net, optimizer): # (código de otimização permanece o mesmo)
+def optimize_model(memory, policy_net, target_net, optimizer):
     if len(memory) < BATCH_SIZE: return
     transitions = memory.sample(BATCH_SIZE)
     batch = Transition(*zip(*transitions))
